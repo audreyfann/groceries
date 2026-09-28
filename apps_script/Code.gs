@@ -1,6 +1,6 @@
 /**
  * Hamm Weekly Grocery Planner — Google Apps Script
- * Version 0.3.0
+ * Version 0.4.0
  *
  * Required Script Properties:
  *   BACKEND_URL
@@ -16,17 +16,32 @@ const EXCLUDED_SHEET = 'Excluded Items';
 const REVIEW_SHEET = 'Needs Review';
 const GUIDE_SHEET = 'Planner Guide';
 const DAYLIGHT_SHEET = 'Daylight Matches';
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 
 const HEADER_FILL = '#1F4E3D';
 const HEADER_TEXT = '#FFFFFF';
 const LIGHT_FILL = '#EAF3EF';
 const WARNING_FILL = '#FFF4CC';
 
+
+const ALL_ITEMS_HEADERS = [
+  'Item ID', 'Event', 'Lead', 'Event Date', 'Dish', 'Ingredient', 'Quantity (raw)',
+  'Parsed Low', 'Parsed High', 'Unit', 'Quantity Quality', 'Status', 'Supplier',
+  'Arrived', 'Action', 'Notes', 'Source Sheet', 'Source Row'
+];
+
+const NON_SOURCE_SHEETS = new Set([
+  SOURCE_SHEET, OUTPUT_SHEET, EXCLUDED_SHEET, REVIEW_SHEET, GUIDE_SHEET, DAYLIGHT_SHEET,
+  'Settings', 'Ingredient Aliases', 'Always Stocked', 'Supplier Rules',
+  'Ingredient Conversions', 'Product Catalog', 'Weekly Overrides',
+  'Dashboard', 'Buy List', 'Pending Orders', 'Suppliers', 'Website Import'
+]);
+
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('Grocery Tools')
     .addItem('Set up / update planning tabs', 'setupPlannerSheets')
+    .addItem('Refresh source data', 'refreshAllItemsFromHeadCookTabs')
     .addItem('Configure connection', 'configurePlanner')
     .addItem('Validate setup', 'validatePlannerSetup')
     .addSeparator()
@@ -54,12 +69,14 @@ function setupPlannerSheets() {
     ['Version', VERSION, ''],
     ['', '', ''],
     ['Step', 'What to do', 'Where'],
-    ['1', 'Set the Monday for the order week.', 'Settings'],
-    ['2', 'Keep pantry staples and aliases current.', 'Always Stocked / Ingredient Aliases'],
-    ['3', 'Generate the week; unresolved items are searched in the Daylight public catalog.', 'Weekly Order / Daylight Matches'],
-    ['4', 'Approve a Daylight match once to reuse the exact package later.', 'Daylight Matches / Product Catalog'],
-    ['5', 'Review low-confidence and missing-product lines.', 'Needs Review'],
-    ['6', 'Check off purchases; shopper, user, and time are retained.', 'Weekly Order'],
+    ['1', 'Keep entering groceries in the weekly Grocery tabs.', 'Tabs such as Grocery - Sep 14, 2026'],
+    ['2', 'Refresh source data; the script rebuilds All Items automatically.', 'Grocery Tools → Refresh source data'],
+    ['3', 'Set the Monday for the order week.', 'Settings'],
+    ['4', 'Keep pantry staples and aliases current.', 'Always Stocked / Ingredient Aliases'],
+    ['5', 'Generate the week; unresolved items are searched in the Daylight public catalog.', 'Weekly Order / Daylight Matches'],
+    ['6', 'Approve a Daylight match once to reuse the exact package later.', 'Daylight Matches / Product Catalog'],
+    ['7', 'Review low-confidence and missing-product lines.', 'Needs Review'],
+    ['8', 'Check off purchases; shopper, user, and time are retained.', 'Weekly Order'],
     ['', '', ''],
     ['Important', 'The Instacart key belongs in the backend environment, never in this spreadsheet.', ''],
   ]);
@@ -74,11 +91,15 @@ function setupPlannerSheets() {
     ['Product Selection Mode', 'balanced', 'balanced, lowest cost, or lowest waste'],
     ['Delivery Postal Code', '', 'Used to check nearby Instacart retailers'],
     ['Country Code', 'US', 'US or CA'],
+    ['Auto Refresh Source Data', true, 'Rebuild All Items from weekly head-cook tabs before each order'],
+    ['Source Tab Prefix', 'Grocery -', 'Preferred weekly-tab prefix; if no matching table is found, all non-planner tabs are scanned'],
     ['Auto Browse Daylight', true, 'Search the public Daylight catalog after generating unresolved items'],
     ['Daylight Results Per Ingredient', 5, 'Top public catalog matches to show for each ingredient'],
     ['Daylight Max Ingredients Per Run', 25, 'Caps catalog matching work during one generation'],
   ]);
 
+  ensureSettingRow_(settingsSheet, 'Auto Refresh Source Data', true, 'Rebuild All Items from weekly head-cook tabs before each order');
+  ensureSettingRow_(settingsSheet, 'Source Tab Prefix', 'Grocery -', 'Preferred weekly-tab prefix; if no matching table is found, all non-planner tabs are scanned');
   ensureSettingRow_(settingsSheet, 'Auto Browse Daylight', true, 'Search the public Daylight catalog after generating unresolved items');
   ensureSettingRow_(settingsSheet, 'Daylight Results Per Ingredient', 5, 'Top public catalog matches to show for each ingredient');
   ensureSettingRow_(settingsSheet, 'Daylight Max Ingredients Per Run', 25, 'Caps catalog matching work during one generation');
@@ -135,6 +156,8 @@ function setupPlannerSheets() {
     [mondayIso_(new Date()), '', '', 'Use buy or ignore only when overriding normal rules'],
   ]);
 
+  const sourceSheet = ensureSheet_(ss, SOURCE_SHEET, [ALL_ITEMS_HEADERS]);
+
   ensureSheet_(ss, OUTPUT_SHEET, [[
     'Bought', 'Stable ID', 'Store', 'Ingredient', 'Exact Product', 'Buy Quantity',
     'Purchase Unit', 'Package Size', 'Needed', 'Original Need', 'Purchased', 'Excess',
@@ -159,8 +182,19 @@ function setupPlannerSheets() {
   ]]);
 
   formatPlannerSheets_();
+  let imported = null;
+  if (sourceSheet.getLastRow() <= 1) {
+    try {
+      imported = refreshAllItemsFromHeadCookTabs_(true);
+    } catch (error) {
+      imported = {row_count: 0, warning: error.message};
+    }
+  }
+  const importNote = imported && imported.row_count
+    ? ` Imported ${imported.row_count} source lines from ${imported.parsed_sheet_count} tab(s).`
+    : ' Use Grocery Tools → Refresh source data after your weekly grocery tabs are ready.';
   SpreadsheetApp.getUi().alert(
-    'Planner tabs are ready. Add real approved products to Product Catalog, configure the backend, then generate a week.'
+    'Planner tabs are ready.' + importNote + ' Configure the backend, then generate a week.'
   );
 }
 
@@ -212,19 +246,35 @@ function validatePlannerSetup() {
   const ss = SpreadsheetApp.getActive();
   const issues = [];
   const requiredSheets = [
-    SOURCE_SHEET, 'Settings', 'Ingredient Aliases', 'Always Stocked', 'Supplier Rules',
+    'Settings', 'Ingredient Aliases', 'Always Stocked', 'Supplier Rules',
     'Ingredient Conversions', 'Product Catalog', 'Weekly Overrides', DAYLIGHT_SHEET
   ];
   requiredSheets.forEach(name => {
     if (!ss.getSheetByName(name)) issues.push(`Missing sheet: ${name}`);
   });
 
-  const source = ss.getSheetByName(SOURCE_SHEET);
-  if (source) {
+  let source = ss.getSheetByName(SOURCE_SHEET);
+  if (!source || source.getLastRow() < 2) {
+    try {
+      refreshAllItemsFromHeadCookTabs_(true);
+      source = ss.getSheetByName(SOURCE_SHEET);
+    } catch (error) {
+      issues.push(`Source data could not be refreshed: ${error.message}`);
+    }
+  }
+
+  if (!source) {
+    issues.push(`The generated ${SOURCE_SHEET} tab could not be created.`);
+  } else {
     const headers = source.getRange(1, 1, 1, source.getLastColumn()).getDisplayValues()[0];
     ['Event Date', 'Lead', 'Ingredient', 'Parsed Low', 'Parsed High', 'Unit'].forEach(header => {
-      if (!headers.includes(header)) issues.push(`All Items is missing column: ${header}`);
+      if (!headers.includes(header)) issues.push(`${SOURCE_SHEET} is missing column: ${header}`);
     });
+    if (source.getLastRow() < 2) {
+      issues.push(
+        'No ingredient rows were found. A source tab needs an Ingredient header and a Quantity, Total Quantity, or Individual Quantity header.'
+      );
+    }
   }
 
   const props = PropertiesService.getScriptProperties();
@@ -254,7 +304,7 @@ function validatePlannerSetup() {
   if (issues.length) {
     SpreadsheetApp.getUi().alert(`Setup needs attention:\n\n• ${issues.join('\n• ')}`);
   } else {
-    SpreadsheetApp.getUi().alert('Setup validation passed.');
+    SpreadsheetApp.getUi().alert('Setup validation passed. Source data and backend connection are ready.');
   }
 }
 
@@ -262,15 +312,25 @@ function generateWeeklyOrder() {
   const ss = SpreadsheetApp.getActive();
   const props = PropertiesService.getScriptProperties();
   if (!props.getProperty('BACKEND_URL')) throw new Error('Run Grocery Tools → Configure connection first.');
-  if (!ss.getSheetByName(SOURCE_SHEET)) throw new Error(`Missing required source tab: ${SOURCE_SHEET}`);
 
   const settings = readSettings_();
   const weekStart = settings['Week Start'];
   if (!weekStart) throw new Error('Settings must contain Week Start.');
 
+  let source = ss.getSheetByName(SOURCE_SHEET);
+  if (parseBoolean_(settings['Auto Refresh Source Data']) || !source || source.getLastRow() < 2) {
+    refreshAllItemsFromHeadCookTabs_(true);
+    source = ss.getSheetByName(SOURCE_SHEET);
+  }
+  if (!source || source.getLastRow() < 2) {
+    throw new Error(
+      'No source ingredients were found. Run Grocery Tools → Refresh source data and make sure a weekly tab has Ingredient and Quantity headers.'
+    );
+  }
+
   const payload = {
     week_start: formatDateIso_(weekStart),
-    all_items: sheetToObjects_(ss.getSheetByName(SOURCE_SHEET)),
+    all_items: sheetToObjects_(source),
     ingredient_aliases: sheetToObjects_(ss.getSheetByName('Ingredient Aliases')),
     always_stocked: sheetToObjects_(ss.getSheetByName('Always Stocked')),
     spice_inventory: readSpiceInventory_(),
@@ -639,6 +699,593 @@ function parseDateOrToday_(value) {
 }
 
 
+function refreshAllItemsFromHeadCookTabs() {
+  const result = refreshAllItemsFromHeadCookTabs_(false);
+  const sheetNames = result.parsed_sheets.length ? `\n\nRead: ${result.parsed_sheets.join(', ')}` : '';
+  const preserved = result.preserved_existing
+    ? '\n\nNo new source table was found, so the existing All Items data was preserved.'
+    : '';
+  SpreadsheetApp.getUi().alert(
+    `Source refresh complete.\n\nIngredient lines: ${result.row_count}\nSource tabs: ${result.parsed_sheet_count}` +
+    sheetNames + preserved
+  );
+}
+
+function refreshAllItemsFromHeadCookTabs_(silent) {
+  const ss = SpreadsheetApp.getActive();
+  let settings = {};
+  try {
+    settings = readSettings_();
+  } catch (error) {
+    settings = {};
+  }
+
+  const prefix = String(settings['Source Tab Prefix'] || 'Grocery -').trim().toLowerCase();
+  const weekStart = settings['Week Start'];
+  let defaultYear = new Date().getFullYear();
+  try {
+    defaultYear = new Date(formatDateIso_(weekStart)).getFullYear();
+  } catch (error) {
+    // Keep the current year when Week Start is not configured yet.
+  }
+
+  const candidates = ss.getSheets().filter(sheet => !NON_SOURCE_SHEETS.has(sheet.getName()));
+  const preferred = prefix
+    ? candidates.filter(sheet => sheet.getName().trim().toLowerCase().startsWith(prefix))
+    : [];
+
+  let collected = collectSourceRows_(preferred.length ? preferred : candidates, defaultYear);
+  if (!collected.rows.length && preferred.length && preferred.length !== candidates.length) {
+    collected = collectSourceRows_(candidates, defaultYear);
+  }
+
+  let target = ss.getSheetByName(SOURCE_SHEET);
+  if (!target) target = ss.insertSheet(SOURCE_SHEET);
+  const existingCount = Math.max(0, target.getLastRow() - 1);
+
+  if (!collected.rows.length && existingCount > 0) {
+    styleSourceSheet_(target);
+    return {
+      row_count: existingCount,
+      parsed_sheet_count: 0,
+      parsed_sheets: [],
+      skipped_sheets: collected.skipped_sheets,
+      preserved_existing: true,
+    };
+  }
+
+  replaceSheet_(target, ALL_ITEMS_HEADERS, collected.rows);
+  if (collected.rows.length) {
+    target.getRange(2, 4, collected.rows.length, 1).setNumberFormat('yyyy-mm-dd');
+    target.getRange(2, 14, collected.rows.length, 1).insertCheckboxes();
+  }
+  styleSourceSheet_(target);
+
+  return {
+    row_count: collected.rows.length,
+    parsed_sheet_count: collected.parsed_sheets.length,
+    parsed_sheets: collected.parsed_sheets,
+    skipped_sheets: collected.skipped_sheets,
+    preserved_existing: false,
+  };
+}
+
+function collectSourceRows_(sheets, defaultYear) {
+  const rows = [];
+  const parsedSheets = [];
+  const skippedSheets = [];
+
+  sheets.forEach(sheet => {
+    const result = extractNormalizedRowsFromSourceSheet_(sheet, defaultYear);
+    if (result.header_found) {
+      parsedSheets.push(sheet.getName());
+      rows.push(...result.rows);
+    } else {
+      skippedSheets.push(sheet.getName());
+    }
+  });
+
+  return {rows, parsed_sheets: parsedSheets, skipped_sheets: skippedSheets};
+}
+
+function extractNormalizedRowsFromSourceSheet_(sheet, defaultYear) {
+  if (!sheet || sheet.getLastRow() < 1 || sheet.getLastColumn() < 1) {
+    return {header_found: false, rows: []};
+  }
+
+  const range = sheet.getDataRange();
+  const display = range.getDisplayValues();
+  const raw = range.getValues();
+  const backgrounds = range.getBackgrounds();
+  const fontWeights = range.getFontWeights();
+  const rows = [];
+  const groups = {};
+  let headerMap = null;
+  let headerFound = false;
+  let currentIngredient = '';
+  let currentDish = '';
+  let blankStreak = 0;
+
+  const context = {
+    date: inferDateFromSourceTabName_(sheet.getName(), defaultYear),
+    lead: inferLeadFromSourceTabName_(sheet.getName()),
+    event: sheet.getName(),
+    dish: '',
+  };
+
+  display.forEach((displayRow, rowIndex) => {
+    const rawRow = raw[rowIndex];
+    const detectedHeader = detectSourceHeaderMap_(displayRow);
+    if (detectedHeader) {
+      headerMap = detectedHeader;
+      headerFound = true;
+      currentIngredient = '';
+      currentDish = '';
+      blankStreak = 0;
+      return;
+    }
+
+    updateSourceContextFromRow_(context, displayRow, rawRow, defaultYear);
+    if (!headerMap) return;
+
+    const ingredientCell = cleanSourceCell_(valueAt_(displayRow, headerMap.ingredient));
+    const combined = headerMap.leadQuantity >= 0
+      ? parseCombinedLeadQuantity_(valueAt_(displayRow, headerMap.leadQuantity))
+      : {lead: '', quantity: ''};
+    const lead = cleanSourceCell_(valueAt_(displayRow, headerMap.lead)) || combined.lead || context.lead;
+    const supplier = cleanSourceCell_(valueAt_(displayRow, headerMap.supplier));
+    const notes = cleanSourceCell_(valueAt_(displayRow, headerMap.notes));
+    const orderedValue = rawValueAt_(rawRow, headerMap.ordered);
+    const arrivedValue = rawValueAt_(rawRow, headerMap.arrived);
+    const directQuantity = cleanSourceCell_(valueAt_(displayRow, headerMap.quantity));
+    const totalQuantity = cleanSourceCell_(valueAt_(displayRow, headerMap.totalQuantity)) || directQuantity;
+    const individualQuantity = cleanSourceCell_(valueAt_(displayRow, headerMap.individualQuantity)) || combined.quantity;
+
+    const relevantValues = [
+      ingredientCell, lead, supplier, notes, directQuantity, totalQuantity, individualQuantity,
+      valueAt_(displayRow, headerMap.ordered), valueAt_(displayRow, headerMap.arrived)
+    ];
+    if (!relevantValues.some(value => String(value || '').trim())) {
+      blankStreak += 1;
+      if (blankStreak >= 2) currentIngredient = '';
+      return;
+    }
+    blankStreak = 0;
+
+    const fontWeight = headerMap.ingredient >= 0 ? fontWeights[rowIndex][headerMap.ingredient] : '';
+    const background = headerMap.ingredient >= 0 ? backgrounds[rowIndex][headerMap.ingredient] : '';
+    if (ingredientCell && isSourceBoundaryRow_(
+      ingredientCell,
+      individualQuantity || totalQuantity,
+      lead,
+      supplier,
+      orderedValue,
+      arrivedValue,
+      fontWeight,
+      background
+    )) {
+      if (!isRecipeInstructionText_(ingredientCell)) {
+        currentDish = ingredientCell;
+        context.dish = ingredientCell;
+      }
+      currentIngredient = '';
+      return;
+    }
+
+    if (ingredientCell) currentIngredient = ingredientCell;
+    const ingredient = currentIngredient;
+    if (!ingredient || isGenericSourceLabel_(ingredient)) return;
+
+    const rowDateValue = rawValueAt_(rawRow, headerMap.eventDate) || valueAt_(displayRow, headerMap.eventDate);
+    const eventDate = parseSourceDateValue_(rowDateValue, defaultYear) || context.date;
+    const event = cleanSourceCell_(valueAt_(displayRow, headerMap.event)) || context.event || sheet.getName();
+    const dish = cleanSourceCell_(valueAt_(displayRow, headerMap.dish)) || currentDish || context.dish;
+    const explicitStatus = cleanSourceCell_(valueAt_(displayRow, headerMap.status));
+    const explicitAction = cleanSourceCell_(valueAt_(displayRow, headerMap.action));
+
+    const base = {
+      sheet,
+      row_number: rowIndex + 1,
+      event,
+      lead,
+      event_date: eventDate,
+      dish,
+      ingredient,
+      supplier,
+      ordered: orderedValue,
+      arrived: arrivedValue,
+      explicit_status: explicitStatus,
+      explicit_action: explicitAction,
+      notes,
+    };
+
+    if (headerMap.individualQuantity >= 0 || headerMap.leadQuantity >= 0) {
+      const key = [ingredient.toLowerCase(), dish.toLowerCase(), event.toLowerCase()].join('|');
+      if (!groups[key]) groups[key] = {output_count: 0, fallback: null};
+      if (totalQuantity && !groups[key].fallback) {
+        groups[key].fallback = {...base, quantity_raw: totalQuantity, row_number: rowIndex + 1};
+      }
+      if (individualQuantity) {
+        rows.push(buildNormalizedSourceRow_({...base, quantity_raw: individualQuantity}));
+        groups[key].output_count += 1;
+      } else if (lead && !totalQuantity) {
+        rows.push(buildNormalizedSourceRow_({...base, quantity_raw: ''}));
+        groups[key].output_count += 1;
+      }
+      return;
+    }
+
+    const quantityRaw = directQuantity || totalQuantity;
+    const hasProcurementSignal = Boolean(
+      quantityRaw || lead || supplier || notes || truthySource_(orderedValue) || truthySource_(arrivedValue)
+    );
+    if (!hasProcurementSignal) return;
+    rows.push(buildNormalizedSourceRow_({...base, quantity_raw: quantityRaw}));
+  });
+
+  Object.values(groups).forEach(group => {
+    if (group.output_count === 0 && group.fallback) {
+      rows.push(buildNormalizedSourceRow_({...group.fallback, item_suffix: 'total'}));
+    }
+  });
+
+  rows.sort((a, b) => {
+    const aDate = a[3] instanceof Date ? a[3].getTime() : 0;
+    const bDate = b[3] instanceof Date ? b[3].getTime() : 0;
+    return aDate - bDate || String(a[16]).localeCompare(String(b[16])) || Number(a[17]) - Number(b[17]);
+  });
+  return {header_found: headerFound, rows};
+}
+
+function buildNormalizedSourceRow_(item) {
+  const parsed = parseSourceQuantity_(item.quantity_raw);
+  const procurement = deriveProcurementState_(
+    item.supplier,
+    item.ordered,
+    item.arrived,
+    item.explicit_status,
+    item.explicit_action
+  );
+  const suffix = item.item_suffix ? `-${item.item_suffix}` : '';
+  const itemId = `SRC-${item.sheet.getSheetId()}-${item.row_number}${suffix}`;
+  return [
+    itemId,
+    item.event || item.sheet.getName(),
+    item.lead || '',
+    item.event_date || '',
+    item.dish || '',
+    item.ingredient || '',
+    String(item.quantity_raw || '').trim(),
+    parsed.low,
+    parsed.high,
+    parsed.unit,
+    parsed.quality,
+    procurement.status,
+    item.supplier || '',
+    procurement.arrived,
+    procurement.action,
+    item.notes || '',
+    item.sheet.getName(),
+    item.row_number,
+  ];
+}
+
+function detectSourceHeaderMap_(row) {
+  const normalized = row.map(normalizeSourceHeader_);
+  const ingredient = findHeaderIndex_(normalized, [
+    'ingredient', 'ingredients', 'grocery item', 'item'
+  ]);
+  const leadQuantity = normalized.findIndex(value =>
+    value.includes('head cook') && value.includes('quantity')
+  );
+  const lead = findHeaderIndex_(normalized, [
+    'head cook', 'cook', 'lead', 'headcook'
+  ]);
+  const individualQuantity = findHeaderIndex_(normalized, [
+    'individual quantity', 'head cook quantity', 'cook quantity',
+    'quantity per head cook', 'individual amount'
+  ]);
+  const totalQuantity = findHeaderIndex_(normalized, [
+    'total quantity', 'combined quantity', 'weekly total', 'quantity total quantity',
+    'quantity total', 'total amount'
+  ]);
+  let quantity = findHeaderIndex_(normalized, ['quantity', 'qty', 'amount']);
+  if (quantity < 0) {
+    quantity = normalized.findIndex(value =>
+      value === 'quantity total quantity' || value === 'quantity total'
+    );
+  }
+
+  if (ingredient < 0 || [quantity, totalQuantity, individualQuantity, leadQuantity].every(index => index < 0)) {
+    return null;
+  }
+
+  return {
+    ingredient,
+    quantity,
+    totalQuantity,
+    individualQuantity,
+    leadQuantity,
+    lead,
+    notes: findHeaderIndex_(normalized, ['head cook notes', 'cook notes', 'notes', 'note']),
+    supplier: findHeaderIndex_(normalized, ['supplier', 'store', 'vendor']),
+    ordered: findHeaderIndex_(normalized, ['ordered', 'order placed', 'purchased', 'ordered checkbox']),
+    arrived: findHeaderIndex_(normalized, ['arrived', 'received', 'delivered', 'arrived checkbox']),
+    eventDate: findHeaderIndex_(normalized, ['event date', 'meal date', 'dinner date', 'date']),
+    event: findHeaderIndex_(normalized, ['event', 'theme', 'dinner']),
+    dish: findHeaderIndex_(normalized, ['dish', 'recipe', 'course']),
+    status: findHeaderIndex_(normalized, ['status', 'procurement status']),
+    action: findHeaderIndex_(normalized, ['action', 'next action']),
+  };
+}
+
+function findHeaderIndex_(normalizedRow, aliases) {
+  const aliasSet = new Set(aliases.map(normalizeSourceHeader_));
+  return normalizedRow.findIndex(value => aliasSet.has(value));
+}
+
+function normalizeSourceHeader_(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[?*]/g, '')
+    .replace(/[\\/|:_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function cleanSourceCell_(value) {
+  return String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+}
+
+function valueAt_(row, index) {
+  return index >= 0 && index < row.length ? row[index] : '';
+}
+
+function rawValueAt_(row, index) {
+  return index >= 0 && index < row.length ? row[index] : '';
+}
+
+function parseCombinedLeadQuantity_(value) {
+  const text = cleanSourceCell_(value);
+  if (!text) return {lead: '', quantity: ''};
+  const match = text.match(/^(.+?)\s*(?:—|–|-|:|\|)\s*((?:\d|[¼½¾⅓⅔⅛⅜⅝⅞]).*)$/);
+  return match ? {lead: match[1].trim(), quantity: match[2].trim()} : {lead: text, quantity: ''};
+}
+
+function updateSourceContextFromRow_(context, displayRow, rawRow, defaultYear) {
+  for (let column = 0; column < displayRow.length - 1; column += 1) {
+    const label = normalizeSourceHeader_(displayRow[column]);
+    if (!label) continue;
+    const displayValue = displayRow[column + 1];
+    const rawValue = rawRow[column + 1];
+    if (['event date', 'meal date', 'dinner date', 'date'].includes(label)) {
+      context.date = parseSourceDateValue_(rawValue || displayValue, defaultYear) || context.date;
+    } else if (['head cook', 'cook', 'lead'].includes(label)) {
+      context.lead = cleanSourceCell_(displayValue) || context.lead;
+    } else if (['event', 'theme', 'dinner'].includes(label)) {
+      context.event = cleanSourceCell_(displayValue) || context.event;
+    } else if (['dish', 'recipe', 'course'].includes(label)) {
+      context.dish = cleanSourceCell_(displayValue) || context.dish;
+    }
+  }
+}
+
+function isSourceBoundaryRow_(text, quantity, lead, supplier, ordered, arrived, fontWeight, background) {
+  if (isRecipeInstructionText_(text)) return true;
+  if (quantity || lead || supplier || truthySource_(ordered) || truthySource_(arrived)) return false;
+  const normalized = cleanSourceCell_(text).toLowerCase();
+  const styled = String(fontWeight || '').toLowerCase() === 'bold' || isNonDefaultFill_(background);
+  const namedSection = /^(dish|course|item\s*\d+|main|side|dessert|drink|starch|vegetable|tofu|chicken|recipe)\b/.test(normalized);
+  return styled || namedSection || normalized.endsWith(':');
+}
+
+function isRecipeInstructionText_(text) {
+  const normalized = cleanSourceCell_(text).toLowerCase();
+  return normalized.startsWith('recipe instruction') ||
+    normalized.startsWith('instructions') ||
+    normalized.startsWith('directions') ||
+    /^https?:\/\//.test(normalized);
+}
+
+function isGenericSourceLabel_(text) {
+  const normalized = normalizeSourceHeader_(text);
+  return [
+    'ingredient', 'ingredients', 'quantity', 'total quantity', 'individual quantity',
+    'head cook', 'head cook notes', 'notes', 'supplier', 'ordered', 'arrived'
+  ].includes(normalized);
+}
+
+function isNonDefaultFill_(background) {
+  const value = String(background || '').toLowerCase();
+  return value && !['#ffffff', 'white', '#fff', ''].includes(value);
+}
+
+function inferLeadFromSourceTabName_(name) {
+  const text = cleanSourceCell_(name);
+  if (!text || /^grocery\b/i.test(text) || inferDateFromSourceTabName_(text, new Date().getFullYear())) return '';
+  return text;
+}
+
+function inferDateFromSourceTabName_(name, defaultYear) {
+  let text = cleanSourceCell_(name)
+    .replace(/^grocery\s*[-–—:]\s*/i, '')
+    .replace(/\bweek\s+of\b/i, '')
+    .trim();
+
+  const iso = text.match(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/);
+  if (iso) return localDate_(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+
+  const numeric = text.match(/\b(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?/);
+  if (numeric) {
+    let year = numeric[3] ? Number(numeric[3]) : defaultYear;
+    if (year < 100) year += 2000;
+    return localDate_(year, Number(numeric[1]), Number(numeric[2]));
+  }
+
+  const months = monthMap_();
+  const monthNames = Object.keys(months).join('|');
+  const monthMatch = text.match(new RegExp(`\\b(${monthNames})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:\\s*[-–—]\\s*\\d{1,2})?(?:,?\\s+(20\\d{2}))?`, 'i'));
+  if (monthMatch) {
+    return localDate_(Number(monthMatch[3] || defaultYear), months[monthMatch[1].toLowerCase()], Number(monthMatch[2]));
+  }
+  return null;
+}
+
+function parseSourceDateValue_(value, defaultYear) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  const text = cleanSourceCell_(value);
+  if (!text) return null;
+  return inferDateFromSourceTabName_(text, defaultYear);
+}
+
+function monthMap_() {
+  return {
+    jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
+    apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7,
+    aug: 8, august: 8, sep: 9, sept: 9, september: 9, oct: 10, october: 10,
+    nov: 11, november: 11, dec: 12, december: 12,
+  };
+}
+
+function localDate_(year, month, day) {
+  const result = new Date(Number(year), Number(month) - 1, Number(day), 12, 0, 0);
+  return Number.isNaN(result.getTime()) ? null : result;
+}
+
+function deriveProcurementState_(supplier, orderedValue, arrivedValue, explicitStatus, explicitAction) {
+  const supplierText = cleanSourceCell_(supplier).toLowerCase();
+  const arrived = truthySource_(arrivedValue);
+  const ordered = truthySource_(orderedValue);
+  const inStock = ['we have', 'we have it', 'in stock', 'pantry'].includes(supplierText);
+
+  let status = cleanSourceCell_(explicitStatus);
+  let action = cleanSourceCell_(explicitAction);
+  if (!status) {
+    if (arrived) status = 'Received';
+    else if (inStock) status = 'We Have';
+    else if (ordered) status = 'Ordered';
+    else status = 'Unspecified';
+  }
+  if (!action) {
+    if (arrived) action = 'Received';
+    else if (inStock) action = 'In stock';
+    else if (ordered) action = 'Await delivery';
+    else action = 'Buy / assign supplier';
+  }
+  return {status, action, arrived};
+}
+
+function truthySource_(value) {
+  if (value === true) return true;
+  return ['true', 'yes', 'y', '1', 'checked', 'ordered', 'arrived', 'received', 'done']
+    .includes(String(value || '').trim().toLowerCase());
+}
+
+function parseSourceQuantity_(value) {
+  const original = cleanSourceCell_(value);
+  if (!original) return {low: '', high: '', unit: '', quality: 'Missing'};
+
+  let text = expandUnicodeFractions_(original)
+    .replace(/[–—]/g, '-')
+    .replace(/,/g, '')
+    .trim();
+  const lower = text.toLowerCase();
+  if (/\b(to taste|as needed|a lot|some|several|handful|enough for|enough to)\b/.test(lower) || /\+/.test(text)) {
+    return {low: '', high: '', unit: '', quality: 'Ambiguous'};
+  }
+
+  const numberPattern = '(?:\\d+\\s+\\d+\\/\\d+|\\d+\\/\\d+|\\d+(?:\\.\\d+)?)';
+  const rangeMatch = text.match(new RegExp(`(${numberPattern})\\s*(?:-|\\bto\\b)\\s*(${numberPattern})`, 'i'));
+  const firstMatch = text.match(new RegExp(numberPattern));
+  if (!firstMatch) return {low: '', high: '', unit: '', quality: 'Ambiguous'};
+
+  let low;
+  let high;
+  let numberEnd;
+  let quality = 'Parsed';
+  if (rangeMatch) {
+    low = parseSourceNumber_(rangeMatch[1]);
+    high = parseSourceNumber_(rangeMatch[2]);
+    numberEnd = rangeMatch.index + rangeMatch[0].length;
+    quality = 'Range';
+  } else {
+    low = parseSourceNumber_(firstMatch[0]);
+    high = low;
+    numberEnd = firstMatch.index + firstMatch[0].length;
+    if (/\b(about|approx|approximately|around|roughly)\b|~/.test(lower)) quality = 'Approximate';
+  }
+  if (!Number.isFinite(low) || !Number.isFinite(high)) {
+    return {low: '', high: '', unit: '', quality: 'Ambiguous'};
+  }
+
+  const unit = detectSourceUnit_(text, numberEnd) || 'count';
+  return {low, high, unit, quality};
+}
+
+function expandUnicodeFractions_(value) {
+  const fractions = {
+    '¼': '1/4', '½': '1/2', '¾': '3/4', '⅓': '1/3', '⅔': '2/3',
+    '⅛': '1/8', '⅜': '3/8', '⅝': '5/8', '⅞': '7/8'
+  };
+  return String(value || '').replace(/(\d)?([¼½¾⅓⅔⅛⅜⅝⅞])/g, (match, whole, fraction) =>
+    whole ? `${whole} ${fractions[fraction]}` : fractions[fraction]
+  );
+}
+
+function parseSourceNumber_(token) {
+  const text = cleanSourceCell_(token);
+  const mixed = text.match(/^(\d+)\s+(\d+)\/(\d+)$/);
+  if (mixed) return Number(mixed[1]) + Number(mixed[2]) / Number(mixed[3]);
+  const fraction = text.match(/^(\d+)\/(\d+)$/);
+  if (fraction) return Number(fraction[1]) / Number(fraction[2]);
+  return Number(text);
+}
+
+function detectSourceUnit_(text, numberEnd) {
+  const afterNumber = String(text || '').slice(numberEnd, numberEnd + 30).toLowerCase();
+  const whole = String(text || '').toLowerCase();
+  const patterns = [
+    [/\b(?:fluid ounces?|fl\.?\s*oz|floz)\b/i, 'fl oz'],
+    [/\b(?:tablespoons?|tbsp|tbs)\b/i, 'tbsp'],
+    [/\b(?:teaspoons?|tsp)\b/i, 'tsp'],
+    [/\b(?:kilograms?|kgs?)\b/i, 'kg'],
+    [/\b(?:grams?|g)\b/i, 'g'],
+    [/\b(?:pounds?|lbs?)\b/i, 'lb'],
+    [/\b(?:ounces?|oz)\b/i, 'oz'],
+    [/\b(?:milliliters?|millilitres?|mls?)\b/i, 'ml'],
+    [/\b(?:liters?|litres?|l)\b/i, 'l'],
+    [/\b(?:gallons?|gals?)\b/i, 'gallon'],
+    [/\b(?:quarts?|qts?)\b/i, 'quart'],
+    [/\b(?:pints?|pts?)\b/i, 'pint'],
+    [/\b(?:cups?|c)\b/i, 'cup'],
+    [/\bdozen\b/i, 'dozen'],
+    [/\bheads?\b/i, 'head'],
+    [/\bcloves?\b/i, 'clove'],
+    [/\bbunch(?:es)?\b/i, 'bunch'],
+    [/\bcans?\b/i, 'can'],
+    [/\bbags?\b/i, 'bag'],
+    [/\bbottles?\b/i, 'bottle'],
+    [/\bboxes?\b/i, 'box'],
+    [/\b(?:packs?|packages?|packets?)\b/i, 'package'],
+    [/\bjars?\b/i, 'jar'],
+    [/\bsprigs?\b/i, 'sprig'],
+    [/\btrays?\b/i, 'tray'],
+    [/\btubs?\b/i, 'tub'],
+    [/\bcartons?\b/i, 'carton'],
+    [/\bloaves?\b/i, 'loaf'],
+    [/\b(?:each|count|whole|pieces?|units?|medium|large|small|carrots?|tomatoes?|onions?|avocados?|eggs?|fillets?|filets?|thighs?|pads?|paddles?|ears?|stalks?|sheets?|blocks?|containers?)\b/i, 'count'],
+  ];
+  for (const [pattern, unit] of patterns) {
+    if (pattern.test(afterNumber)) return unit;
+  }
+  for (const [pattern, unit] of patterns) {
+    if (pattern.test(whole)) return unit;
+  }
+  return '';
+}
+
+
 function forceBuySelectedIngredient() {
   setSelectedIngredientOverride_('buy');
 }
@@ -814,9 +1461,13 @@ function readSpiceInventory_() {
   if (!id) return [];
 
   const linked = SpreadsheetApp.openById(id);
-  const tabName = props.getProperty('SPICE_TAB');
-  const sheet = tabName ? linked.getSheetByName(tabName) : linked.getSheets()[0];
-  if (!sheet) throw new Error('Configured spice inventory tab was not found.');
+  const tabName = String(props.getProperty('SPICE_TAB') || '').trim();
+  let sheet = tabName ? linked.getSheetByName(tabName) : null;
+  if (!sheet) {
+    sheet = linked.getSheets()[0];
+    if (tabName && sheet) props.setProperty('SPICE_TAB', '');
+  }
+  if (!sheet) throw new Error('The spice inventory spreadsheet has no readable tabs.');
   if (sheet.getLastRow() < 1 || sheet.getLastColumn() < 1) return [];
 
   const values = sheet.getDataRange().getDisplayValues();
@@ -932,6 +1583,7 @@ function formatPlannerSheets_() {
   styleControlSheet_(ss.getSheetByName('Ingredient Conversions'), [170, 110, 100, 110, 100, 150, 80, 300]);
   styleControlSheet_(ss.getSheetByName('Product Catalog'), [160, 150, 300, 110, 110, 130, 100, 90, 110, 90, 280, 100, 80, 80, 80, 120, 320]);
   styleControlSheet_(ss.getSheetByName('Weekly Overrides'), [120, 170, 100, 360]);
+  styleSourceSheet_(ss.getSheetByName(SOURCE_SHEET));
   styleOutputSheet_(ss.getSheetByName(OUTPUT_SHEET));
   styleSimpleOutput_(ss.getSheetByName(EXCLUDED_SHEET), [130, 160, 110, 260, 130, 180, 220, 120]);
   styleSimpleOutput_(ss.getSheetByName(REVIEW_SHEET), [160, 130, 120, 300, 200, 140, 160]);
@@ -961,6 +1613,8 @@ function applyPlannerValidations_() {
     settings.getRange('B9').setDataValidation(
       SpreadsheetApp.newDataValidation().requireValueInList(['US', 'CA'], true).build()
     );
+    const autoRefreshRow = settingRow_(settings, 'Auto Refresh Source Data');
+    if (autoRefreshRow > 0) settings.getRange(autoRefreshRow, 2).insertCheckboxes();
     const autoBrowseRow = settingRow_(settings, 'Auto Browse Daylight');
     if (autoBrowseRow > 0) settings.getRange(autoBrowseRow, 2).insertCheckboxes();
   }
@@ -1015,6 +1669,29 @@ function styleControlSheet_(sheet, widths) {
   sheet.getRange(1, 1, lastRow, lastColumn).setWrap(true).setVerticalAlignment('top');
   if (lastRow >= 1) sheet.getRange(1, 1, lastRow, lastColumn).createFilter();
   widths.forEach((width, index) => sheet.setColumnWidth(index + 1, width));
+}
+
+
+function styleSourceSheet_(sheet) {
+  if (!sheet) return;
+  const filter = sheet.getFilter();
+  if (filter) filter.remove();
+  const lastColumn = Math.max(sheet.getLastColumn(), ALL_ITEMS_HEADERS.length);
+  const lastRow = Math.max(sheet.getLastRow(), 1);
+  sheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, lastColumn)
+    .setBackground(HEADER_FILL)
+    .setFontColor(HEADER_TEXT)
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center');
+  sheet.getRange(1, 1, lastRow, lastColumn).setWrap(true).setVerticalAlignment('top');
+  sheet.getRange(1, 1, lastRow, lastColumn).createFilter();
+  const widths = [130, 190, 150, 105, 220, 190, 150, 90, 90, 90, 110, 120, 120, 80, 150, 260, 150, 85];
+  widths.forEach((width, index) => sheet.setColumnWidth(index + 1, width));
+  if (lastRow > 1) {
+    sheet.getRange(2, 4, lastRow - 1, 1).setNumberFormat('yyyy-mm-dd');
+  }
+  sheet.setTabColor('#5B9BD5');
 }
 
 function styleOutputSheet_(sheet) {
