@@ -1,0 +1,41 @@
+name: Apply source importer v0.4
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - patches/source-import-v0_4.ready
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rebuild and validate Apps Script
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat patches/source-import-v0_4.part* | base64 -d | gunzip > apps_script/Code.gs
+          cp apps_script/Code.gs /tmp/Code.js
+          node --check /tmp/Code.js
+          grep -q "const VERSION = '0.4.0';" apps_script/Code.gs
+          grep -q "Refresh source data" apps_script/Code.gs
+
+      - name: Commit updated Apps Script
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f patches/source-import-v0_4.part* patches/source-import-v0_4.ready
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A apps_script/Code.gs patches
+          git commit -m 'Auto-build All Items from weekly grocery tabs'
+          git push origin HEAD:main
