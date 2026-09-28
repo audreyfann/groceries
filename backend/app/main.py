@@ -6,11 +6,12 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from .classifier import classify_ingredients
 from .daylight import daylight_catalog
 from .instacart import create_shopping_list, get_nearby_retailers
 from .recommender import generate_plan
 
-app = FastAPI(title="Weekly Grocery Planner", version="0.3.0")
+app = FastAPI(title="Weekly Grocery Planner", version="0.5.0")
 
 
 class GeneratePayload(BaseModel):
@@ -23,7 +24,16 @@ class GeneratePayload(BaseModel):
     supplier_rules: list[dict[str, Any]] = Field(default_factory=list)
     product_catalog: list[dict[str, Any]] = Field(default_factory=list)
     ingredient_conversions: list[dict[str, Any]] = Field(default_factory=list)
+    ingredient_categories: list[dict[str, Any]] = Field(default_factory=list)
     settings: dict[str, Any] = Field(default_factory=dict)
+
+
+
+
+class ClassifyPayload(BaseModel):
+    ingredients: list[str] = Field(default_factory=list)
+    ingredient_aliases: list[dict[str, Any]] = Field(default_factory=list)
+    ingredient_categories: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class InstacartPayload(BaseModel):
@@ -63,7 +73,7 @@ def require_shared_token(x_shared_token: str | None = Header(default=None)) -> N
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "version": "0.3.0"}
+    return {"status": "ok", "version": "0.5.0"}
 
 
 @app.post("/generate", dependencies=[Depends(require_shared_token)])
@@ -72,6 +82,20 @@ def generate(payload: GeneratePayload) -> dict[str, Any]:
         return generate_plan(payload.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/classify", dependencies=[Depends(require_shared_token)])
+def classify(payload: ClassifyPayload) -> dict[str, Any]:
+    from .normalization import build_alias_map
+
+    alias_map = build_alias_map(payload.ingredient_aliases)
+    results = classify_ingredients(payload.ingredients, payload.ingredient_categories, alias_map)
+    return {
+        "items": [
+            {"ingredient": ingredient, **classification.as_dict()}
+            for ingredient, classification in sorted(results.items())
+        ]
+    }
 
 
 @app.post("/instacart-link", dependencies=[Depends(require_shared_token)])

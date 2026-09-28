@@ -19,6 +19,7 @@ def base_payload():
         ],
         "product_catalog": [],
         "ingredient_conversions": [],
+        "ingredient_categories": [],
         "settings": {
             "bulk_meat_lb_threshold": 5,
             "bulk_meat_count_threshold": 20,
@@ -206,3 +207,47 @@ def test_daylight_public_catalog_product_is_medium_confidence():
     assert recommendation["buy_quantity"] == 3
     assert recommendation["confidence"] == "medium"
     assert "does not confirm account price or live availability" in recommendation["reason"]
+
+
+def test_fresh_produce_routes_to_daylight_without_manual_rule():
+    payload = base_payload()
+    payload["all_items"] = [source_item("1", "Audrey", "Roma tomatoes", 8, "lb")]
+    result = generate_plan(payload)
+    assert result["summary"]["review_count"] == 1
+    review = result["review"][0]
+    assert review["category"] == "produce"
+    assert review["preferred_retailers"].split(", ")[0] == "Daylight"
+
+
+def test_frozen_produce_stays_costco_not_daylight():
+    payload = base_payload()
+    payload["all_items"] = [source_item("1", "Audrey", "Frozen berries", 12, "oz")]
+    result = generate_plan(payload)
+    review = result["review"][0]
+    assert review["category"] == "frozen"
+    assert review["preferred_retailers"].split(", ")[0] == "Costco Same-Day"
+
+
+def test_asian_specialty_routes_to_weee():
+    payload = base_payload()
+    payload["all_items"] = [source_item("1", "Audrey", "Gochujang", 2, "jar")]
+    result = generate_plan(payload)
+    review = result["review"][0]
+    assert review["category"] == "asian_specialty"
+    assert review["preferred_retailers"].split(", ")[0] == "Weee"
+
+
+def test_manual_category_override_beats_smart_classifier():
+    payload = base_payload()
+    payload["all_items"] = [source_item("1", "Audrey", "Tomatoes", 8, "lb")]
+    payload["ingredient_categories"] = [{
+        "Canonical Item": "tomatoes",
+        "Category": "general_grocery",
+        "Preferred Retailers": "Instacart; Costco Same-Day",
+        "Active": True,
+        "Notes": "Buy canned tomatoes for this item",
+    }]
+    result = generate_plan(payload)
+    review = result["review"][0]
+    assert review["classification_source"] == "manual"
+    assert review["preferred_retailers"].split(", ")[0] == "Instacart"

@@ -1,8 +1,8 @@
-# Hamm Weekly Grocery Planner — v0.3
+# Hamm Weekly Grocery Planner — v0.5
 
 This project converts the existing `All Items` head-cook tracker into one weekly purchasing workflow. It combines ingredient totals, keeps head-cook attribution, applies pantry/spice/meat exclusions, calculates exact package counts from approved products, and now searches Daylight Foods' public catalog for reviewable product candidates.
 
-## What v0.3 adds
+## What v0.5 adds
 
 The Daylight adapter:
 
@@ -14,6 +14,17 @@ The Daylight adapter:
 - writes candidates to `Daylight Matches` for human approval before they enter `Product Catalog`.
 
 The public catalog does **not** confirm account-specific price or live availability. Approved Daylight rows therefore remain medium-confidence until the shopper verifies the product in the account portal.
+
+### Smart ingredient classification
+
+The planner now classifies each ingredient before choosing a supplier:
+
+- fresh/raw fruits, vegetables, mushrooms, aromatics, and fresh herbs → **Daylight**;
+- distinctly Asian specialty products → **Weee**;
+- frozen, dairy/refrigerated, bakery, packaged, and general grocery items → **Costco Same-Day**, then Instacart; and
+- bulk meat remains excluded for the separate meat supplier.
+
+The classifier is hybrid. Common items use local rules, so it works without another API key. Ambiguous items can optionally use the OpenAI Responses API when `OPENAI_API_KEY` is present. Only ingredient names are sent. Exact manual overrides in `Ingredient Categories` and `Supplier Rules` always win.
 
 ## Example
 
@@ -30,13 +41,14 @@ For a multipack such as `10/5oz`, retailer quantity 1 supplies 10 inner packages
 
 ## Core features
 
-- Monday–Sunday weekly selection from `All Items`.
+- Automatic rebuilding of `All Items` from weekly head-cook grocery tabs, followed by Monday–Sunday selection.
 - Combined quantities across head cooks with event, dish, and source-row attribution.
 - Exclusions for pantry staples, linked spice inventory, already ordered/received items, and bulk meat.
 - Approved aliases and ingredient-specific conversions.
 - Exact package rounding and excess calculation.
 - Checklist state preserved after regeneration.
-- Daylight public-catalog candidate browsing and approval.
+- Smart produce/Asian/general-grocery classification and supplier routing.
+- Daylight public-catalog candidate browsing only for ingredients routed to Daylight.
 - Optional Instacart/Costco shopping-list handoff.
 
 ## Current pantry exclusions
@@ -67,6 +79,7 @@ Upload the workbook to Google Drive, open it in Google Sheets, and save it as a 
 - `Settings`
 - `Ingredient Aliases`
 - `Always Stocked`
+- `Ingredient Categories`
 - `Supplier Rules`
 - `Ingredient Conversions`
 - `Product Catalog`
@@ -83,7 +96,7 @@ Upload the workbook to Google Drive, open it in Google Sheets, and save it as a 
 3. Save and reload the Sheet.
 4. Choose **Grocery Tools → Set up / update planning tabs**.
 
-The script does not rewrite `All Items`.
+The script rebuilds `All Items` from recognized weekly source tabs when **Auto Refresh Source Data** is enabled.
 
 ### 3. Run or deploy the backend
 
@@ -112,9 +125,13 @@ DAYLIGHT_CACHE_HOURS=24
 DAYLIGHT_REQUEST_DELAY_SECONDS=0.20
 DAYLIGHT_MAX_PAGES=40
 DAYLIGHT_TIMEOUT_SECONDS=25
+OPENAI_API_KEY=
+OPENAI_CLASSIFIER_ENABLED=true
+OPENAI_CLASSIFIER_MODEL=gpt-5.6-luna
+OPENAI_CLASSIFIER_TIMEOUT_SECONDS=20
 ```
 
-The Daylight adapter needs no account credentials. It reads only the public catalog. Keep the Instacart key in the backend environment, never in the Sheet.
+The Daylight adapter needs no account credentials. The OpenAI key is optional; without it, the local category rules still route common ingredients. Keep all API keys in the backend environment, never in the Sheet.
 
 ### 5. Connect the Sheet
 
@@ -127,7 +144,7 @@ Use **Grocery Tools → Configure connection** and enter the deployed backend UR
 1. Set `Settings → Week Start`.
 2. Leave `Auto Browse Daylight` checked.
 3. Choose **Grocery Tools → Generate weekly order**.
-4. The planner writes unresolved items to `Needs Review` and searches appropriate rows in the public Daylight catalog.
+4. The planner classifies ingredients, writes unresolved items to `Needs Review`, and searches only Daylight-primary rows in the public catalog.
 5. Open `Daylight Matches`.
 6. Review the exact listing, UOM, package parsing, match confidence, and proposed quantity.
 7. Select the desired row and choose **Grocery Tools → Daylight public catalog → Approve selected match**.
@@ -159,13 +176,14 @@ Instacart              fallback items and shopping-list handoff
 Separate meat supplier bulk meat excluded from the four-store order
 ```
 
-Rules are editable in `Supplier Rules`. Exact item rules take priority over the wildcard default.
+Category overrides are editable in `Ingredient Categories`; exact retailer rules are editable in `Supplier Rules`. Exact item rules take priority, followed by the smart classifier, then the wildcard default.
 
 ## API endpoints
 
 ```text
 GET  /health
 POST /generate
+POST /classify
 POST /daylight/search
 POST /daylight/search-batch
 POST /daylight/refresh

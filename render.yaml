@@ -22,3 +22,11 @@ services:
         value: "40"
       - key: DAYLIGHT_TIMEOUT_SECONDS
         value: "25"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_CLASSIFIER_ENABLED
+        value: "true"
+      - key: OPENAI_CLASSIFIER_MODEL
+        value: gpt-5.6-luna
+      - key: OPENAI_CLASSIFIER_TIMEOUT_SECONDS
+        value: "20"

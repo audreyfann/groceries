@@ -1,6 +1,6 @@
 /**
  * Hamm Weekly Grocery Planner — Google Apps Script
- * Version 0.4.0
+ * Version 0.5.0
  *
  * Required Script Properties:
  *   BACKEND_URL
@@ -16,7 +16,7 @@ const EXCLUDED_SHEET = 'Excluded Items';
 const REVIEW_SHEET = 'Needs Review';
 const GUIDE_SHEET = 'Planner Guide';
 const DAYLIGHT_SHEET = 'Daylight Matches';
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 
 const HEADER_FILL = '#1F4E3D';
 const HEADER_TEXT = '#FFFFFF';
@@ -32,7 +32,7 @@ const ALL_ITEMS_HEADERS = [
 
 const NON_SOURCE_SHEETS = new Set([
   SOURCE_SHEET, OUTPUT_SHEET, EXCLUDED_SHEET, REVIEW_SHEET, GUIDE_SHEET, DAYLIGHT_SHEET,
-  'Settings', 'Ingredient Aliases', 'Always Stocked', 'Supplier Rules',
+  'Settings', 'Ingredient Aliases', 'Always Stocked', 'Ingredient Categories', 'Supplier Rules',
   'Ingredient Conversions', 'Product Catalog', 'Weekly Overrides',
   'Dashboard', 'Buy List', 'Pending Orders', 'Suppliers', 'Website Import'
 ]);
@@ -72,11 +72,12 @@ function setupPlannerSheets() {
     ['1', 'Keep entering groceries in the weekly Grocery tabs.', 'Tabs such as Grocery - Sep 14, 2026'],
     ['2', 'Refresh source data; the script rebuilds All Items automatically.', 'Grocery Tools → Refresh source data'],
     ['3', 'Set the Monday for the order week.', 'Settings'],
-    ['4', 'Keep pantry staples and aliases current.', 'Always Stocked / Ingredient Aliases'],
-    ['5', 'Generate the week; unresolved items are searched in the Daylight public catalog.', 'Weekly Order / Daylight Matches'],
-    ['6', 'Approve a Daylight match once to reuse the exact package later.', 'Daylight Matches / Product Catalog'],
-    ['7', 'Review low-confidence and missing-product lines.', 'Needs Review'],
-    ['8', 'Check off purchases; shopper, user, and time are retained.', 'Weekly Order'],
+    ['4', 'Keep pantry staples, aliases, and category overrides current.', 'Always Stocked / Ingredient Aliases / Ingredient Categories'],
+    ['5', 'Generate the week; fresh produce is routed to Daylight, Asian specialty items to Weee, and other items to Costco/Instacart.', 'Needs Review'],
+    ['6', 'Only produce-routed unresolved items are searched in the Daylight public catalog.', 'Daylight Matches'],
+    ['7', 'Approve a Daylight match once to reuse the exact package later.', 'Daylight Matches / Product Catalog'],
+    ['8', 'Review low-confidence and missing-product lines.', 'Needs Review'],
+    ['9', 'Check off purchases; shopper, user, and time are retained.', 'Weekly Order'],
     ['', '', ''],
     ['Important', 'The Instacart key belongs in the backend environment, never in this spreadsheet.', ''],
   ]);
@@ -109,6 +110,10 @@ function setupPlannerSheets() {
     ['Canonical Item', 'Aliases', 'Active', 'Notes'],
     ['garlic', 'garlic cloves; cloves garlic; cloves of garlic; garlic clove', true, ''],
     ['green onions', 'green onion; scallions; spring onions', true, ''],
+  ]);
+
+  ensureSheet_(ss, 'Ingredient Categories', [
+    ['Canonical Item', 'Category', 'Preferred Retailers', 'Active', 'Notes'],
   ]);
 
   ensureSheet_(ss, 'Always Stocked', [
@@ -171,7 +176,8 @@ function setupPlannerSheets() {
   ]]);
 
   ensureSheet_(ss, REVIEW_SHEET, [[
-    'Ingredient', 'Head Cook', 'Quantity', 'Reason', 'Preferred Retailers', 'Source', 'Search Hint'
+    'Ingredient', 'Head Cook', 'Quantity', 'Category', 'Category Confidence',
+    'Category Reason', 'Preferred Retailers', 'Reason', 'Source', 'Search Hint'
   ]]);
 
   ensureSheet_(ss, DAYLIGHT_SHEET, [[
@@ -246,7 +252,7 @@ function validatePlannerSetup() {
   const ss = SpreadsheetApp.getActive();
   const issues = [];
   const requiredSheets = [
-    'Settings', 'Ingredient Aliases', 'Always Stocked', 'Supplier Rules',
+    'Settings', 'Ingredient Aliases', 'Always Stocked', 'Ingredient Categories', 'Supplier Rules',
     'Ingredient Conversions', 'Product Catalog', 'Weekly Overrides', DAYLIGHT_SHEET
   ];
   requiredSheets.forEach(name => {
@@ -332,6 +338,7 @@ function generateWeeklyOrder() {
     week_start: formatDateIso_(weekStart),
     all_items: sheetToObjects_(source),
     ingredient_aliases: sheetToObjects_(ss.getSheetByName('Ingredient Aliases')),
+    ingredient_categories: sheetToObjects_(ss.getSheetByName('Ingredient Categories')),
     always_stocked: sheetToObjects_(ss.getSheetByName('Always Stocked')),
     spice_inventory: readSpiceInventory_(),
     weekly_overrides: sheetToObjects_(ss.getSheetByName('Weekly Overrides')),
@@ -369,6 +376,9 @@ function generateWeeklyOrder() {
     `Excluded/audit lines: ${summary.excluded_count || 0}\n` +
     `Needs review: ${summary.review_count || 0}\n` +
     `Source rows in week: ${summary.selected_source_rows || 0}\n` +
+    `Ingredients classified: ${summary.classified_ingredient_count || 0}\n` +
+    `Fresh produce detected: ${summary.produce_ingredient_count || 0}\n` +
+    `AI classifications: ${summary.ai_classification_count || 0}\n` +
     `Undated rows skipped: ${summary.skipped_undated_rows || 0}` +
     daylightLine
   );
@@ -458,6 +468,8 @@ function browseDaylightForReviewRows_(reviewRows, forceRefresh, silent) {
     if (!ingredient || !hint) return;
     if (!row.search_hint && !row['Search Hint'] && !reason.includes('catalog product')) return;
     const preferred = String(row.preferred_retailers || row['Preferred Retailers'] || '');
+    const primaryRetailer = preferred.split(',')[0].trim().toLowerCase();
+    if (primaryRetailer !== 'daylight') return;
     unique[ingredient.toLowerCase()] = {
       query: hint,
       canonical_item: ingredient,
@@ -1417,13 +1429,17 @@ function writeExcluded_(rows) {
 
 function writeReview_(rows) {
   const sheet = SpreadsheetApp.getActive().getSheetByName(REVIEW_SHEET) || SpreadsheetApp.getActive().insertSheet(REVIEW_SHEET);
-  const headers = ['Ingredient', 'Head Cook', 'Quantity', 'Reason', 'Preferred Retailers', 'Source', 'Search Hint'];
+  const headers = [
+    'Ingredient', 'Head Cook', 'Quantity', 'Category', 'Category Confidence',
+    'Category Reason', 'Preferred Retailers', 'Reason', 'Source', 'Search Hint'
+  ];
   const values = rows.map(row => [
-    row.ingredient || '', row.lead || '', row.quantity_raw || '', row.reason || '',
-    row.preferred_retailers || '', row.source || '', row.search_hint || ''
+    row.ingredient || '', row.lead || '', row.quantity_raw || '', row.category || '',
+    row.category_confidence || '', row.category_reason || '', row.preferred_retailers || '',
+    row.reason || '', row.source || '', row.search_hint || ''
   ]);
   replaceSheet_(sheet, headers, values);
-  styleSimpleOutput_(sheet, [160, 130, 120, 300, 200, 140, 160]);
+  styleSimpleOutput_(sheet, [160, 130, 120, 130, 110, 260, 200, 300, 140, 160]);
 }
 
 function existingOrderState_(sheet) {
@@ -1578,6 +1594,7 @@ function formatPlannerSheets_() {
   styleGuideSheet_(ss.getSheetByName(GUIDE_SHEET));
   styleControlSheet_(ss.getSheetByName('Settings'), [180, 180, 360]);
   styleControlSheet_(ss.getSheetByName('Ingredient Aliases'), [170, 360, 80, 280]);
+  styleControlSheet_(ss.getSheetByName('Ingredient Categories'), [170, 150, 260, 80, 300]);
   styleControlSheet_(ss.getSheetByName('Always Stocked'), [170, 360, 80, 300]);
   styleControlSheet_(ss.getSheetByName('Supplier Rules'), [170, 170, 250, 80, 320]);
   styleControlSheet_(ss.getSheetByName('Ingredient Conversions'), [170, 110, 100, 110, 100, 150, 80, 300]);
@@ -1586,7 +1603,7 @@ function formatPlannerSheets_() {
   styleSourceSheet_(ss.getSheetByName(SOURCE_SHEET));
   styleOutputSheet_(ss.getSheetByName(OUTPUT_SHEET));
   styleSimpleOutput_(ss.getSheetByName(EXCLUDED_SHEET), [130, 160, 110, 260, 130, 180, 220, 120]);
-  styleSimpleOutput_(ss.getSheetByName(REVIEW_SHEET), [160, 130, 120, 300, 200, 140, 160]);
+  styleSimpleOutput_(ss.getSheetByName(REVIEW_SHEET), [160, 130, 120, 130, 110, 260, 200, 300, 140, 160]);
   styleDaylightSheet_(ss.getSheetByName(DAYLIGHT_SHEET));
   applyPlannerValidations_();
 }
@@ -1594,7 +1611,7 @@ function formatPlannerSheets_() {
 function applyPlannerValidations_() {
   const ss = SpreadsheetApp.getActive();
   const checkboxSheets = [
-    ['Ingredient Aliases', 3], ['Always Stocked', 3], ['Supplier Rules', 4],
+    ['Ingredient Aliases', 3], ['Ingredient Categories', 4], ['Always Stocked', 3], ['Supplier Rules', 4],
     ['Ingredient Conversions', 7], ['Product Catalog', 13], ['Product Catalog', 14], ['Product Catalog', 15],
     [DAYLIGHT_SHEET, 1]
   ];
@@ -1617,6 +1634,16 @@ function applyPlannerValidations_() {
     if (autoRefreshRow > 0) settings.getRange(autoRefreshRow, 2).insertCheckboxes();
     const autoBrowseRow = settingRow_(settings, 'Auto Browse Daylight');
     if (autoBrowseRow > 0) settings.getRange(autoBrowseRow, 2).insertCheckboxes();
+  }
+
+  const categories = ss.getSheetByName('Ingredient Categories');
+  if (categories) {
+    categories.getRange(2, 2, 999, 1).setDataValidation(
+      SpreadsheetApp.newDataValidation().requireValueInList(
+        ['produce', 'asian_specialty', 'dairy_refrigerated', 'frozen', 'meat_seafood', 'bakery', 'non_food', 'general_grocery', 'unknown'],
+        true
+      ).build()
+    );
   }
 
   const supplierRules = ss.getSheetByName('Supplier Rules');

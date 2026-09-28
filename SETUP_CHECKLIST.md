@@ -1,4 +1,4 @@
-# Setup checklist — v0.3
+# Setup checklist — v0.5
 
 ## Spreadsheet
 
@@ -57,3 +57,12 @@
 - [ ] Add the API key only to the backend environment.
 - [ ] Use the development endpoint for a development key.
 - [ ] Review every generated match before checkout.
+
+
+## Smart routing
+
+- Run **Set up / update planning tabs** to create `Ingredient Categories`.
+- Fresh produce is automatically routed to Daylight.
+- Asian specialty groceries are automatically routed to Weee.
+- Add an exact row to `Ingredient Categories` when the automatic category should be overridden.
+- Optional: set `OPENAI_API_KEY` in Render for AI fallback on ambiguous ingredient names.

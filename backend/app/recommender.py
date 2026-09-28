@@ -9,6 +9,7 @@ from typing import Any
 
 from dateutil import parser as date_parser
 
+from .classifier import IngredientClassification, classify_ingredients
 from .conversions import ConversionGraph, build_conversion_graph, convert_amount
 from .exclusions import DEFAULT_ALWAYS_STOCKED, evaluate_exclusion, truthy
 from .normalization import build_alias_map, canonicalize, clean_text
@@ -98,7 +99,9 @@ def _supplier_order(
     canonical: str,
     rows: list[dict[str, Any]],
     alias_map: dict[str, str],
+    classification: IngredientClassification | None = None,
 ) -> list[str]:
+    """Return retailer priority. Exact user rules win, then smart classification, then wildcard."""
     wildcard: list[str] | None = None
     for row in rows:
         active = str(_value(row, "Active", "active", default="TRUE")).strip().lower()
@@ -123,6 +126,8 @@ def _supplier_order(
             wildcard = values
         else:
             return values
+    if classification and classification.preferred_retailers:
+        return list(classification.preferred_retailers)
     return wildcard or list(DEFAULT_SUPPLIER_ORDER)
 
 
@@ -330,6 +335,7 @@ def generate_plan(payload: dict[str, Any]) -> dict[str, Any]:
     supplier_rows = list(payload.get("supplier_rules") or [])
     catalog_rows = list(payload.get("product_catalog") or [])
     conversion_rows = list(payload.get("ingredient_conversions") or [])
+    category_rows = list(payload.get("ingredient_categories") or [])
     settings = payload.get("settings") or {}
 
     bulk_meat_lb_threshold = _float(settings.get("bulk_meat_lb_threshold")) or 5.0
@@ -477,12 +483,14 @@ def generate_plan(payload: dict[str, Any]) -> dict[str, Any]:
             },
         })
 
+    classifications = classify_ingredients(grouped.keys(), category_rows, alias_map)
     recommendations: list[dict[str, Any]] = []
 
     for canonical, group in sorted(grouped.items()):
+        classification = classifications.get(canonical)
         requirements = group["requirements"]
         products = _catalog_products(canonical, catalog_rows, alias_map)
-        supplier_order = _supplier_order(canonical, supplier_rows, alias_map)
+        supplier_order = _supplier_order(canonical, supplier_rows, alias_map, classification)
         selected = _select_product(
             canonical=canonical,
             requirements=requirements,
@@ -504,6 +512,10 @@ def generate_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 "source": "; ".join(a["source"] for a in attributions),
                 "search_hint": canonical,
                 "preferred_retailers": ", ".join(supplier_order),
+                "category": classification.category if classification else "unknown",
+                "category_confidence": classification.confidence if classification else "low",
+                "category_reason": classification.reason if classification else "No classification available",
+                "classification_source": classification.source if classification else "none",
             })
             continue
 
@@ -576,6 +588,10 @@ def generate_plan(payload: dict[str, Any]) -> dict[str, Any]:
             "conversion_note": conversion_note,
             "last_checked": last_checked.isoformat() if last_checked else "",
             "preferred_retailers": ", ".join(supplier_order),
+            "category": classification.category if classification else "unknown",
+            "category_confidence": classification.confidence if classification else "low",
+            "category_reason": classification.reason if classification else "No classification available",
+            "classification_source": classification.source if classification else "none",
         })
 
     return {
@@ -590,5 +606,8 @@ def generate_plan(payload: dict[str, Any]) -> dict[str, Any]:
             "review_count": len(review),
             "selected_source_rows": selected_source_rows,
             "skipped_undated_rows": skipped_undated,
+            "classified_ingredient_count": len(classifications),
+            "produce_ingredient_count": sum(1 for item in classifications.values() if item.category == "produce"),
+            "ai_classification_count": sum(1 for item in classifications.values() if item.source == "ai"),
         },
     }
