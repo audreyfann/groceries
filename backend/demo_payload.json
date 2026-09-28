@@ -1,0 +1,102 @@
+{
+  "week_start": "2026-09-21",
+  "all_items": [
+    {
+      "Item ID": "HC-DEMO-1",
+      "Event": "Demo dinner",
+      "Lead": "Audrey",
+      "Event Date": "2026-09-22",
+      "Dish": "Berry crumble",
+      "Ingredient": "Frozen berries",
+      "Quantity (raw)": "5 oz",
+      "Parsed Low": 5,
+      "Parsed High": 5,
+      "Unit": "oz",
+      "Quantity Quality": "Parsed",
+      "Status": "Unspecified",
+      "Arrived": false,
+      "Action": "Buy / assign supplier",
+      "Source Sheet": "Audrey",
+      "Source Row": 20
+    },
+    {
+      "Item ID": "HC-DEMO-2",
+      "Event": "Demo dinner",
+      "Lead": "Malti",
+      "Event Date": "2026-09-24",
+      "Dish": "Smoothies",
+      "Ingredient": "Frozen berries",
+      "Quantity (raw)": "7 oz",
+      "Parsed Low": 7,
+      "Parsed High": 7,
+      "Unit": "oz",
+      "Quantity Quality": "Parsed",
+      "Status": "Unspecified",
+      "Arrived": false,
+      "Action": "Buy / assign supplier",
+      "Source Sheet": "Malti",
+      "Source Row": 30
+    },
+    {
+      "Item ID": "HC-DEMO-3",
+      "Event": "Demo dinner",
+      "Lead": "Malti",
+      "Event Date": "2026-09-24",
+      "Dish": "Sauce",
+      "Ingredient": "Soy sauce",
+      "Quantity (raw)": "1/2 cup",
+      "Parsed Low": 0.5,
+      "Parsed High": 0.5,
+      "Unit": "cup",
+      "Quantity Quality": "Parsed",
+      "Status": "Unspecified",
+      "Arrived": false,
+      "Action": "Buy / assign supplier",
+      "Source Sheet": "Malti",
+      "Source Row": 31
+    }
+  ],
+  "ingredient_aliases": [],
+  "always_stocked": [],
+  "spice_inventory": [],
+  "weekly_overrides": [],
+  "supplier_rules": [
+    {
+      "Canonical Item": "frozen berries",
+      "Primary Retailer": "Costco Same-Day",
+      "Fallback Retailers": "Instacart",
+      "Active": true
+    },
+    {
+      "Canonical Item": "*",
+      "Primary Retailer": "Costco Same-Day",
+      "Fallback Retailers": "Instacart",
+      "Active": true
+    }
+  ],
+  "product_catalog": [
+    {
+      "Canonical Item": "frozen berries",
+      "Retailer": "Costco Same-Day",
+      "Product Name": "Example 4 oz Frozen Berries Bag",
+      "Amount Per Package": 4,
+      "Package Unit": "oz",
+      "Pack Count": 1,
+      "Purchase Unit": "bag",
+      "Price": 2.5,
+      "Preference Rank": 1,
+      "Approved": true,
+      "In Stock": true,
+      "Active": true,
+      "Last Checked": "2026-09-24"
+    }
+  ],
+  "ingredient_conversions": [],
+  "settings": {
+    "bulk_meat_lb_threshold": 5,
+    "bulk_meat_count_threshold": 20,
+    "include_undated_rows": false,
+    "catalog_stale_after_days": 14,
+    "selection_mode": "balanced"
+  }
+}

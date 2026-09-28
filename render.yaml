@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: hamm-grocery-planner
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    envVars:
+      - key: APP_SHARED_TOKEN
+        generateValue: true
+      - key: INSTACART_API_KEY
+        sync: false
+      - key: INSTACART_BASE_URL
+        value: https://connect.dev.instacart.tools
+      - key: DAYLIGHT_CATALOG_URL
+        value: https://daylightfoods.com/catalog/
+      - key: DAYLIGHT_CACHE_HOURS
+        value: "24"
+      - key: DAYLIGHT_REQUEST_DELAY_SECONDS
+        value: "0.20"
+      - key: DAYLIGHT_MAX_PAGES
+        value: "40"
+      - key: DAYLIGHT_TIMEOUT_SECONDS
+        value: "25"

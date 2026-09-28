@@ -1,0 +1,14 @@
+.............................                                            [100%]
+29 passed in 0.38s
+
+Coverage includes:
+- existing weekly aggregation, exclusion, override, and package-math behavior;
+- Daylight public catalog card/UOM parsing with WooCommerce-style product-link classes;
+- pagination detection;
+- package patterns including 5-LB, multipacks, count ranges, BAG6, and 30#;
+- sold-by-pound and sold-each UOM safeguards;
+- compound required quantities;
+- exact integer package recommendations;
+- processing-state-aware product ranking;
+- FastAPI Daylight search and batch endpoints; and
+- medium-confidence labeling for approved public-catalog products without account price/availability.

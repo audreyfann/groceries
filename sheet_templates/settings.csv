@@ -1,0 +1,12 @@
+Setting,Value,Notes
+Week Start,2026-09-21,Monday of the week to generate
+Bulk Meat Threshold (lb),5,Large meat orders go to the separate supplier
+Bulk Meat Count Threshold,20,Also catches large count/package meat orders
+Include Undated Rows,FALSE,Normally leave FALSE
+Catalog Stale After (days),14,Older checks show lower confidence
+Product Selection Mode,balanced,"balanced, lowest cost, or lowest waste"
+Delivery Postal Code,,Used for nearby retailer lookup
+Country Code,US,US or CA
+Auto Browse Daylight,TRUE,Search the public Daylight catalog after generating unresolved items
+Daylight Results Per Ingredient,5,Top public catalog matches to show for each ingredient
+Daylight Max Ingredients Per Run,25,Caps catalog matching work during one generation

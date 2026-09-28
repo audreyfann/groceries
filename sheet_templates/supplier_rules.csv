@@ -1,0 +1,5 @@
+Canonical Item,Primary Retailer,Fallback Retailers,Active,Notes
+frozen berries,Costco Same-Day,Instacart,TRUE,Exact item-specific rule
+bok choy,Daylight,"Weee; Instacart",TRUE,Bulk produce preference
+gochujang,Weee,Instacart,TRUE,Asian specialty preference
+*,Costco Same-Day,Instacart,TRUE,Default for items without a specific rule
