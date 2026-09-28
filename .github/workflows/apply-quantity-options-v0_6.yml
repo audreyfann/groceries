@@ -1,0 +1,42 @@
+name: Apply quantity options v0.6
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - patches/quantity-options-v0_6.ready
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rebuild and validate Apps Script
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat patches/quantity-options-v0_6.part* | base64 -d | gunzip > apps_script/Code.gs
+          cp apps_script/Code.gs /tmp/Code.js
+          node --check /tmp/Code.js
+          grep -q "const VERSION = '0.6.0';" apps_script/Code.gs
+          grep -q "Quantity Options" apps_script/Code.gs
+          grep -q "Quantity Assumptions" apps_script/Code.gs
+
+      - name: Commit updated Apps Script
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f patches/quantity-options-v0_6.part* patches/quantity-options-v0_6.ready
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A apps_script/Code.gs patches
+          git commit -m 'Add quantity equivalents and produce count estimates'
+          git push origin HEAD:main
